@@ -2,7 +2,6 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -28,6 +27,7 @@ pub fn compression(
     // ZIP entry names must be unique for our CLI.
     let mut entry_names = HashSet::new();
 
+
     for source_path in source_files {
         // Read each source before adding its entry.
         let mut source = match File::open(source_path) {
@@ -41,15 +41,6 @@ pub fn compression(
             }
         };
 
-        let mut buffer = Vec::new();
-
-        if let Err(error) = source.read_to_end(&mut buffer) {
-            report.errors.push((
-                source_path.clone(),
-                format!("Could not read file: {}", error),
-            ));
-            continue;
-        }
 
         // Store only the filename inside the ZIP.
         let entry_name = match source_path.file_name() {
@@ -77,7 +68,7 @@ pub fn compression(
 
         // Errors writing the archive are fatal.
         zip.start_file(&entry_name, options)?;
-        zip.write_all(&buffer)?;
+        std::io::copy(&mut source, &mut zip)?;
 
         report.added.push(source_path.clone());
     }
