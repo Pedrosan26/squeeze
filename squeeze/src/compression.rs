@@ -1,7 +1,7 @@
-
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -27,21 +27,7 @@ pub fn compression(
     // ZIP entry names must be unique for our CLI.
     let mut entry_names = HashSet::new();
 
-
     for source_path in source_files {
-        // Read each source before adding its entry.
-        let mut source = match File::open(source_path) {
-            Ok(file) => file,
-            Err(error) => {
-                report.errors.push((
-                    source_path.clone(),
-                    format!("Could not open file: {}", error),
-                ));
-                continue;
-            }
-        };
-
-
         // Store only the filename inside the ZIP.
         let entry_name = match source_path.file_name() {
             Some(name) => name.to_string_lossy().into_owned(),
@@ -54,7 +40,7 @@ pub fn compression(
             }
         };
 
-        if !entry_names.insert(entry_name.clone()) {
+        if entry_names.contains(&entry_name) {
             report.errors.push((
                 source_path.clone(),
                 format!("Duplicate filename inside ZIP: {}", entry_name),
@@ -62,13 +48,42 @@ pub fn compression(
             continue;
         }
 
+        // Open (and size) the source BEFORE creating its entry, so that
+        // failures here are non-fatal and leave the archive untouched.
+        let mut source = match File::open(source_path) {
+            Ok(file) => file,
+            Err(error) => {
+                report.errors.push((
+                    source_path.clone(),
+                    format!("Could not open file: {}", error),
+                ));
+                continue;
+            }
+        };
+
+        let size = match source.metadata() {
+            Ok(metadata) => metadata.len(),
+            Err(error) => {
+                report.errors.push((
+                    source_path.clone(),
+                    format!("Could not read metadata: {}", error),
+                ));
+                continue;
+            }
+        };
+
+        entry_names.insert(entry_name.clone());
+
         let options = FileOptions::default()
             .compression_method(compression_method)
-            .unix_permissions(0o644);
+            .unix_permissions(0o644)
+            // Entries of 4 GiB or more require ZIP64.
+            .large_file(size >= u32::MAX as u64);
 
-        // Errors writing the archive are fatal.
+        // From here on, any error leaves a half-written entry in the
+        // archive, so it is fatal (same policy as write errors).
         zip.start_file(&entry_name, options)?;
-        std::io::copy(&mut source, &mut zip)?;
+        io::copy(&mut source, &mut zip)?;
 
         report.added.push(source_path.clone());
     }
@@ -78,3 +93,6 @@ pub fn compression(
 
     Ok(report)
 }
+
+#[cfg(test)]
+mod lib;

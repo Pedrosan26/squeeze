@@ -1,4 +1,3 @@
-
 mod compression;
 
 use std::env;
@@ -9,7 +8,7 @@ use zip::CompressionMethod;
 fn print_usage() {
     println!(
         "Usage: squeeze <file1> <file2> ... -o <output.zip> \
-         [--method deflate|stored|bzip2|zstd]"
+         [--method deflate|stored|zstd]"
     );
 }
 
@@ -17,7 +16,6 @@ fn parse_method(value: &str) -> Option<CompressionMethod> {
     match value {
         "deflate" => Some(CompressionMethod::Deflated),
         "stored" => Some(CompressionMethod::Stored),
-        "bzip2" => Some(CompressionMethod::Bzip2),
         "zstd" => Some(CompressionMethod::Zstd),
         _ => None,
     }
