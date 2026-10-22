@@ -1,40 +1,89 @@
 
+use std::collections::HashSet;
+use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
-use zip::CompressionMethod;
+use std::path::{Path, PathBuf};
 use zip::write::FileOptions;
+use zip::{CompressionMethod, ZipWriter};
+
+pub struct CompressionReport {
+    pub added: Vec<PathBuf>,
+    pub errors: Vec<(PathBuf, String)>,
+}
 
 pub fn compression(
-    source_file: &str,
-    zip_file: &str,
+    source_files: &[PathBuf],
+    zip_file: &Path,
     compression_method: CompressionMethod,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting compression...");
+) -> Result<CompressionReport, Box<dyn Error>> {
+    let zip_file_handle = File::create(zip_file)?;
+    let mut zip = ZipWriter::new(zip_file_handle);
 
-    let mut source = File::open(source_file)?;
-    let mut buffer = Vec::new();
-    source.read_to_end(&mut buffer)?;
+    let mut report = CompressionReport {
+        added: Vec::new(),
+        errors: Vec::new(),
+    };
 
-    let zip_path = Path::new(zip_file);
-    let zip_file_handle = File::create(zip_path)?;
+    // ZIP entry names must be unique for our CLI.
+    let mut entry_names = HashSet::new();
 
-    let mut zip = zip::ZipWriter::new(zip_file_handle);
+    for source_path in source_files {
+        // Read each source before adding its entry.
+        let mut source = match File::open(source_path) {
+            Ok(file) => file,
+            Err(error) => {
+                report.errors.push((
+                    source_path.clone(),
+                    format!("Could not open file: {}", error),
+                ));
+                continue;
+            }
+        };
 
-    let options = FileOptions::default()
-        .compression_method(compression_method)
-        .unix_permissions(0o644);
+        let mut buffer = Vec::new();
 
-    zip.start_file(source_file, options)?;
-    zip.write_all(&buffer)?;
+        if let Err(error) = source.read_to_end(&mut buffer) {
+            report.errors.push((
+                source_path.clone(),
+                format!("Could not read file: {}", error),
+            ));
+            continue;
+        }
+
+        // Store only the filename inside the ZIP.
+        let entry_name = match source_path.file_name() {
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => {
+                report.errors.push((
+                    source_path.clone(),
+                    "Invalid filename".to_string(),
+                ));
+                continue;
+            }
+        };
+
+        if !entry_names.insert(entry_name.clone()) {
+            report.errors.push((
+                source_path.clone(),
+                format!("Duplicate filename inside ZIP: {}", entry_name),
+            ));
+            continue;
+        }
+
+        let options = FileOptions::default()
+            .compression_method(compression_method)
+            .unix_permissions(0o644);
+
+        // Errors writing the archive are fatal.
+        zip.start_file(&entry_name, options)?;
+        zip.write_all(&buffer)?;
+
+        report.added.push(source_path.clone());
+    }
+
+    // Finalize the archive, even if some input files failed.
     zip.finish()?;
 
-    println!("Compression completed successfully!");
-    println!(
-        "File '{}' has been compressed to '{}'",
-        source_file,
-        zip_file
-    );
-
-    Ok(())
+    Ok(report)
 }

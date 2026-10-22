@@ -1,41 +1,138 @@
+
 mod compression;
 
-use std::io::{self,Read,Write};
+use std::env;
+use std::path::PathBuf;
+use std::process;
 use zip::CompressionMethod;
 
+fn print_usage() {
+    println!(
+        "Usage: squeeze <file1> <file2> ... -o <output.zip> \
+         [--method deflate|stored|bzip2|zstd]"
+    );
+}
+
+fn parse_method(value: &str) -> Option<CompressionMethod> {
+    match value {
+        "deflate" => Some(CompressionMethod::Deflated),
+        "stored" => Some(CompressionMethod::Stored),
+        "bzip2" => Some(CompressionMethod::Bzip2),
+        "zstd" => Some(CompressionMethod::Zstd),
+        _ => None,
+    }
+}
+
 fn main() {
-    let mut source_file = String::new();
-    let mut zip_file = String::new();
-    let mut compression_choice = String::new();
+    let mut args = env::args().skip(1).peekable();
 
-    println!("++++++");
+    let mut source_files: Vec<PathBuf> = Vec::new();
+    let mut output_file: Option<PathBuf> = None;
+    let mut compression_method = CompressionMethod::Deflated;
 
-    println!("Enter the path of the source file to compress:");
-    io::stdin().read_line(&mut source_file).expect("Failed to read source file path");
-    let source_file = source_file.trim();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_usage();
+                return;
+            }
 
-    println!("Enter the destination path for the ZIP file:");
-    io::stdin().read_line(&mut zip_file).expect("Failed to read destination file path");
-    let zip_file = zip_file.trim();
+            "-o" | "--output" => {
+                let Some(value) = args.next() else {
+                    eprintln!("Error: missing output ZIP path.");
+                    process::exit(2);
+                };
 
-    println!("Choose a compression method:");
-    println!("1) Deflated  2) Stored  3) Bzip2  4) Zstd");
-    io::stdin().read_line(&mut compression_choice).expect("Failed to read compression choice");
-    let compression_choice = compression_choice.trim();
+                output_file = Some(PathBuf::from(value));
+            }
 
-    let compression_method = match compression_choice {
-        "1" => CompressionMethod::Deflated,
-        "2" => CompressionMethod::Stored,
-        "3" => CompressionMethod::Bzip2,
-        "4" => CompressionMethod::Zstd,
-        _ => {
-            eprintln!("Invalid choice, defaulting to Deflated.");
-            CompressionMethod::Deflated
+            "--method" => {
+                let Some(value) = args.next() else {
+                    eprintln!("Error: missing compression method.");
+                    process::exit(2);
+                };
+
+                let Some(method) = parse_method(&value) else {
+                    eprintln!("Error: unknown compression method '{}'.", value);
+                    print_usage();
+                    process::exit(2);
+                };
+
+                compression_method = method;
+            }
+
+            _ if arg.starts_with('-') => {
+                eprintln!("Error: unknown option '{}'.", arg);
+                print_usage();
+                process::exit(2);
+            }
+
+            _ => source_files.push(PathBuf::from(arg)),
         }
+    }
+
+    if source_files.is_empty() {
+        eprintln!("Error: provide at least one source file.");
+        print_usage();
+        process::exit(2);
+    }
+
+    let Some(output_file) = output_file else {
+        eprintln!("Error: specify an output ZIP with -o.");
+        print_usage();
+        process::exit(2);
     };
 
-    match compression::compression(source_file, zip_file, compression_method) {
-        Ok(_) => println!("Compression successful."),
-        Err(e) => eprintln!("An error occurred: {}", e),
+    // Prevent accidentally overwriting one of the input files.
+    if output_file.exists() {
+        let output_canonical = output_file.canonicalize().ok();
+
+        if let Some(output_canonical) = output_canonical {
+            for source in &source_files {
+                if source.canonicalize().ok().as_ref()
+                    == Some(&output_canonical)
+                {
+                    eprintln!(
+                        "Error: output ZIP cannot overwrite input '{}'.",
+                        source.display()
+                    );
+                    process::exit(2);
+                }
+            }
+        }
+    }
+
+    println!("Creating ZIP: {}", output_file.display());
+
+    match compression::compression(
+        &source_files,
+        &output_file,
+        compression_method,
+    ) {
+        Ok(report) => {
+            println!("\nCompression finished.");
+            println!("Files added: {}", report.added.len());
+
+            for file in &report.added {
+                println!("  + {}", file.display());
+            }
+
+            if !report.errors.is_empty() {
+                eprintln!("\nFiles that could not be added:");
+
+                for (file, error) in &report.errors {
+                    eprintln!("  - {}: {}", file.display(), error);
+                }
+
+                process::exit(1);
+            }
+
+            println!("ZIP created successfully!");
+        }
+
+        Err(error) => {
+            eprintln!("Fatal ZIP error: {}", error);
+            process::exit(1);
+        }
     }
 }
